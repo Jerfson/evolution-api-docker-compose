@@ -1,0 +1,90 @@
+services:
+  evolution-postgres:
+    container_name: evolution_postgres
+    image: postgres:15-alpine
+    restart: always
+    env_file:
+      - .env
+    environment:
+      POSTGRES_DB: ${POSTGRES_DATABASE:-evolution}
+      POSTGRES_USER: ${POSTGRES_USERNAME:-evolution}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-evolution_pass}
+    command:
+      - postgres
+      - -c
+      - max_connections=1000
+      - -c
+      - listen_addresses=*
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - evolution-net
+    expose:
+      - "5432"
+    # O banco fica acessível apenas dentro da rede do Docker. Para abrir com
+    # DBeaver/pgAdmin a partir do host, descomente as linhas abaixo. Publicar
+    # apenas em 127.0.0.1 evita expor o banco para a rede local.
+    # ports:
+    #   - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USERNAME:-evolution} -d ${POSTGRES_DATABASE:-evolution}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    container_name: evolution_redis
+    # NÃO faça downgrade desta tag sem antes apagar o volume evolution_redis.
+    # A tag `alpine` aponta hoje para a linha 8.x, e o AOF/RDB gravado em
+    # /data usa o formato dessa major: o Redis 7 se recusa a carregá-lo e o
+    # container sai com erro ("Can't handle RDB format version" / manifest do
+    # AOF inválido). Como a `api` depende de `service_healthy` aqui, o Redis
+    # caído impede a API de subir.
+    image: redis:8-alpine
+    restart: always
+    command: >
+      redis-server --port 6379 --appendonly yes
+    volumes:
+      - evolution_redis:/data
+    networks:
+      evolution-net:
+        aliases:
+          - evolution-redis
+    expose:
+      - "6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    container_name: evolution_api
+    # Versão fixada de propósito: com "latest" um `docker compose pull` pode pular
+    # para uma major nova e quebrar a stack sem aviso. Para trocar a versão,
+    # defina EVOLUTION_API_IMAGE no .env (veja .env.example) em vez de editar aqui.
+    image: ${EVOLUTION_API_IMAGE:-evoapicloud/evolution-api:v2.3.7}
+    restart: always
+    depends_on:
+      evolution-postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+    volumes:
+      - evolution_instances:/evolution/instances
+    networks:
+      - evolution-net
+    env_file:
+      - .env
+
+volumes:
+  evolution_instances:
+  evolution_redis:
+  postgres_data:
+
+networks:
+  evolution-net:
+    name: evolution-net
+    driver: bridge
